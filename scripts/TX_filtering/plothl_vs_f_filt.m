@@ -1,20 +1,42 @@
 #!/usr/bin/octave -q
 
+pkg load signal
+
 # filter bank : f_max, filter_type, order, cutoff_freq [, [stopband_attenuation] [passband ripple]]
 #   f_max : the LPF will be used up to this frequency
-#   filter_type : Butterworth, ChebyshevII
+#   filter_type : 'Butterworth', 'ChebyshevII', 'file' (can be .s2p) 
 #   order : filter order
 #   cutoff_freq : frequency where the filter response is 3 dB down
 #   stopband_attenuation : ChebyshevII only, minimun stopband attenuation
 #   passband_ripple : ChebyshevI only, passband ripple
 # filters need to be in ascending f_max order
+#filters = {
+#  {2.5e6, 'Butterworth', 5, 3e6} # 160 m
+#  {4.5e6, 'Butterworth', 5, 5.5e6} # 80 m
+#  {10e6, 'ChebyshevI', 5, 11e6, 0.5} # 40 m / 60 m
+#  {17e6, 'Butterworth', 5, 20e6} # 20 m / 30 m
+#  {24e6, 'ChebyshevI', 5, 30e6, 0.5} # 15 m / 17 m
+#  {31e6, 'ChebyshevII', 5, 37e6, 20} # 10 m / 12 m
+#};
+
+# bank similar to G11 TX LPFs
+#filters = {
+#  {2.5e6, 'ChebyshevII', 5, 2.65e6, 45}
+#  {4.7e6, 'ChebyshevII', 5, 5.1e6, 45}
+#  {8e6, 'ChebyshevII', 5, 8.8e6, 45}
+#  {12e6, 'ChebyshevII', 5, 13.5e6, 45}
+#  {19e6, 'ChebyshevII', 5, 22.3e6, 45}
+#  {34e6, 'ChebyshevII', 5, 34.5e6, 45}
+#};
+
+# G11 TX LPFs bank
 filters = {
-  {2.5e6, 'Butterworth', 5, 3e6} # 160 m
-  {4.5e6, 'Butterworth', 5, 5.5e6} # 80 m
-  {10e6, 'ChebyshevI', 5, 11e6, 0.5} # 40 m / 60 m
-  {17e6, 'Butterworth', 5, 20e6} # 20 m / 30 m
-  {24e6, 'ChebyshevI', 5, 30e6, 0.5} # 15 m / 17 m
-  {31e6, 'ChebyshevII', 5, 37e6, 20} # 10 m / 12 m
+  {2.5e6, 'file', 'G11_bank_1.txt'}
+  {4.7e6, 'file', 'G11_bank_2.txt'}
+  {8e6, 'file', 'G11_bank_3.txt'}
+  {12e6, 'file', 'G11_bank_4.txt'}
+  {19e6, 'file', 'G11_bank_5.txt'}
+  {34e6, 'file', 'G11_bank_6.s2p'}
 };
 
 # sampling frequency (used to compute spurs location)
@@ -104,6 +126,30 @@ function out = filt_ChebyshevII(in, frqs, n, f0, Rs)
   out = in + G_dB;
 endfunction
 
+# apply a filter function from file
+#   if file ends in .s2p it's read as a Touchstone file
+#   (only S21 will be used)
+#   otherwise it is assumed to contain two data columns
+#   containg the frequency and the filter response in dB
+function out = filt_file(in, freqs, fname)
+  Amax = 50; # maximum final attenuation  
+  [dir, name, fext] = fileparts(fname);
+  if strcmp(fext, '.s2p')
+   [ff, fr] = SXPParse(fname, '/dev/null'); # suppress output text
+   ff = ff';
+   fr = squeeze(fr(2,1,:)); # extract S21
+   fr = 20 *log10(abs(fr)); # in dB
+  else
+    fdata = load(fname);
+    ff = fdata(:,1);
+    fr = fdata(:,2);
+  endif
+  
+  G_dB = interp1 (ff, fr, freqs, 'spline');
+  G_dB = merge(G_dB < -Amax, -Amax, G_dB);
+  out = in + G_dB;
+endfunction
+
 # filter the TX spectrum using the provided filter bank
 function ftxdata = LPF(txdata, filters)
   global fs;
@@ -114,10 +160,12 @@ function ftxdata = LPF(txdata, filters)
     switch (filters{fidx}{2})
       case "Butterworth"
         BW = @(in, f) filt_Butterworth(in, f, filters{fidx}{3}, filters{fidx}{4});
-    case "ChebyshevI"
+      case "ChebyshevI"
         BW = @(in, f) filt_ChebyshevI(in, f, filters{fidx}{3}, filters{fidx}{4}, filters{fidx}{5});        
       case "ChebyshevII"
         BW = @(in, f) filt_ChebyshevII(in, f, filters{fidx}{3}, filters{fidx}{4}, filters{fidx}{5});
+      case "file"
+        BW = @(in, f) filt_file(in, f, filters{fidx}{3});
     endswitch
   
     ftxdata(idxmin:idxmax,1) = txdata(idxmin:idxmax,1); # TX frequency
