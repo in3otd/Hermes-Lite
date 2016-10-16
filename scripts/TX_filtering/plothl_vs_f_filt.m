@@ -19,7 +19,7 @@ pkg load signal
 #  {31e6, 'ChebyshevII', 5, 37e6, 20} # 10 m / 12 m
 #};
 
-# bank similar to G11 TX LPFs
+# bank similar to G11 TX LPFs but using ChebyshevII filters
 #filters = {
 #  {2.5e6, 'ChebyshevII', 5, 2.65e6, 45}
 #  {4.7e6, 'ChebyshevII', 5, 5.1e6, 45}
@@ -29,15 +29,25 @@ pkg load signal
 #  {34e6, 'ChebyshevII', 5, 34.5e6, 45}
 #};
 
-# G11 TX LPFs bank
+# bank similar to G11 TX LPFs
 filters = {
-  {2.5e6, 'file', 'G11_bank_1.txt'}
-  {4.7e6, 'file', 'G11_bank_2.txt'}
-  {8e6, 'file', 'G11_bank_3.txt'}
-  {12e6, 'file', 'G11_bank_4.txt'}
-  {19e6, 'file', 'G11_bank_5.txt'}
-  {34e6, 'file', 'G11_bank_6.s2p'}
+  {2.5e6, 'Cauer', 5, 2.65e6, 0.1, 45}
+  {4.7e6, 'Cauer', 5, 5.1e6, 0.1, 45}
+  {8e6, 'Cauer', 5, 8.8e6, 0.1, 45}
+  {12e6, 'Cauer', 5, 13.5e6, 0.1, 45}
+  {19e6, 'Cauer', 5, 22.3e6, 0.1, 45}
+  {34e6, 'Cauer', 5, 34.5e6, 0.1, 45}
 };
+
+# G11 TX LPFs bank - simulated filters response
+#filters = {
+#  {2.5e6, 'file', 'G11_bank_1.txt'}
+#  {4.7e6, 'file', 'G11_bank_2.txt'}
+#  {8e6, 'file', 'G11_bank_3.txt'}
+#  {12e6, 'file', 'G11_bank_4.txt'}
+#  {19e6, 'file', 'G11_bank_5.txt'}
+#  {34e6, 'file', 'G11_bank_6.s2p'}
+#};
 
 # sampling frequency (used to compute spurs location)
 global fs = 79.872e6;
@@ -75,6 +85,7 @@ function draw_limit_line(level)
   hold off;
 endfunction
 
+##########
 # apply a Butterworth filter
 function out = filt_Butterworth(in, frqs, n, f0)
   # ideal Butterworth filter
@@ -87,6 +98,7 @@ function out = filt_Butterworth(in, frqs, n, f0)
   out = in + G_dB;
 endfunction
 
+##########
 # apply a type I (equiripple in the passband) Chebyshev filter
 function out = filt_ChebyshevI(in, frqs, n, f0, rp)
   # ideal (type I) Chebyshev filter
@@ -97,9 +109,9 @@ function out = filt_ChebyshevI(in, frqs, n, f0, rp)
   Amax = 50; # maximum final attenuation  
   
   # compute epsilon from the passband ripple
-  eps = sqrt(10^(rp/10)-1);
+  ep = sqrt(10^(rp/10)-1);
   # compute the the ripple cutoff frequency from the 3 dB cutoff frequency
-  f0 = f0 / cosh(acosh(1/eps)/n);    
+  f0 = f0 / cosh(acosh(1/ep)/n);    
   [b, a] = cheby1(n, rp, f0, 's');
   
   G_dB = 20*log10(abs(freqs(b, a, frqs)));
@@ -107,6 +119,7 @@ function out = filt_ChebyshevI(in, frqs, n, f0, rp)
   out = in + G_dB;
 endfunction
 
+##########
 # apply a type II (equiripple in the stopband) Chebyshev filter
 function out = filt_ChebyshevII(in, frqs, n, f0, Rs)
   # ideal inverse (type II) Chebyshev filter
@@ -116,15 +129,90 @@ function out = filt_ChebyshevII(in, frqs, n, f0, Rs)
   
   Amax = 50; # maximum final attenuation  
   # compute epsilon from the stopband attenuation
-  eps = 1 / sqrt(10^(Rs/10)-1);
+  es = 1 / sqrt(10^(Rs/10)-1);
   # compute the the stopband cutoff frequency from the 3 dB cutoff frequency
-  f0 = f0 * cosh(acosh(1/eps)/n);
+  f0 = f0 * cosh(acosh(1/es)/n);
   [b, a] = cheby2(n, Rs, f0, 's');
   
   G_dB = 20*log10(abs(freqs(b, a, frqs)));
   G_dB = merge(G_dB < -Amax, -Amax, G_dB);
   out = in + G_dB;
 endfunction
+
+##########
+# Cauer filter helper functions
+function val = ellipFint(phipsi, m)
+  # incomplete elliptic integral of the first kind
+  #   computed by integration
+  # phi : amplitude (can be complex)
+  # m : the parameter (= k^2)
+  f = @(x) 1./sqrt(1-m*sin(x).^2);
+  val = quadgk(f, 0, phipsi, "Waypoints", asin(1/sqrt(m)));
+endfunction
+
+function val = sn(u, m)
+  # Jacobian elliptic sine
+  [val, cn, dn, err] = ellipj (u, m);
+endfunction
+
+function val = KoverKp(k)
+  # k : elliptic modulus (= sqrt(m))
+  # approximation of K(k)/K'(k)
+  if (k < 1/sqrt(2))
+    kp = sqrt (1 - k * k);
+    val = 2 * pi / (log(2) + acosh(((1 + sqrt(kp))/(1 - sqrt(kp)))^2));
+  else
+    val = (log(2) + acosh(((1 + sqrt(k))/(1 - sqrt(k)))^2)) / (2 * pi);
+  endif
+ endfunction
+ 
+function ws = ws(n, rp, Rs, wp)
+   # compute ws so that (X2/X'2 = N X1 / X'1)
+   # compute epsilon from the passband ripple
+   ep = sqrt(10^(rp/10)-1);
+   # compute epsilon from the stopband attenuation
+   es = 1 / sqrt(10^(Rs/10)-1);
+   
+   rhs = n * KoverKp(ep * es);
+   [ws, fval, info, output] = fzero(@(x) KoverKp(wp / x) - rhs, [wp*(1+eps), 10*wp]);
+ endfunction
+ 
+function wc = wc(n, rp, Rs, wp)
+   # compute epsilon from the passband ripple
+   ep = sqrt(10^(rp/10)-1);
+   # compute epsilon from the stopband attenuation
+   es = 1 / sqrt(10^(Rs/10)-1);
+   
+   X1 = ellipke((ep*es)^2);
+   ws = ws(n, rp, Rs, wp);
+   X2 = ellipke((wp / ws)^2);
+   
+   sni = ellipFint(asin(1 / ep), (ep*es)^2);
+   q = rem(n+1, 2);
+   wc = wp * sn(X2 + j*imag(X2 *(sni-q*X1) / (n*X1)), (wp / ws)^2);
+   wc = real(wc);
+ endfunction
+
+# apply a Cauer (elliptic) filter
+function out = filt_Cauer(in, frqs, n, f0, rp, Rs)
+  # ideal Cauer filter
+  # n : order
+  # f0 : cutoff frequency
+  # rp : passband ripple
+  # Rs : stopband attenuation
+  
+  Amax = 50; # maximum final attenuation  
+  
+  # compute the ripple cutoff frequency from the 3 dB cutoff frequency
+  wcc = wc(n, rp, Rs, 1);
+  f0 = f0 / wcc;
+  [b, a] = ellip (n, rp, Rs, f0, 's');
+  
+  G_dB = 20*log10(abs(freqs(b, a, frqs)));
+  G_dB = merge(G_dB < -Amax, -Amax, G_dB);
+  out = in + G_dB;
+endfunction
+
 
 # apply a filter function from file
 #   if file ends in .s2p it's read as a Touchstone file
@@ -151,6 +239,7 @@ function out = filt_file(in, freqs, fname)
 endfunction
 
 # filter the TX spectrum using the provided filter bank
+#  (should be optimized, as filters are created anew for every filtering operation and not reused)
 function ftxdata = LPF(txdata, filters)
   global fs;
   idxmin = 1;
@@ -161,9 +250,11 @@ function ftxdata = LPF(txdata, filters)
       case "Butterworth"
         BW = @(in, f) filt_Butterworth(in, f, filters{fidx}{3}, filters{fidx}{4});
       case "ChebyshevI"
-        BW = @(in, f) filt_ChebyshevI(in, f, filters{fidx}{3}, filters{fidx}{4}, filters{fidx}{5});        
+        BW = @(in, f) filt_ChebyshevI(in, f, filters{fidx}{3}, filters{fidx}{4}, filters{fidx}{5});
       case "ChebyshevII"
         BW = @(in, f) filt_ChebyshevII(in, f, filters{fidx}{3}, filters{fidx}{4}, filters{fidx}{5});
+      case "Cauer"
+        BW = @(in, f) filt_Cauer(in, f, filters{fidx}{3}, filters{fidx}{4}, filters{fidx}{5}, filters{fidx}{6});
       case "file"
         BW = @(in, f) filt_file(in, f, filters{fidx}{3});
     endswitch
